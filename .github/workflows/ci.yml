@@ -1,0 +1,45 @@
+name: offline-checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      NO_PROXY: 127.0.0.1,localhost,::1
+      no_proxy: 127.0.0.1,localhost,::1
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: '0.13.6'
+          enable-cache: true
+      - name: Install locked CAD dependencies
+        run: uv sync --locked --group dev --group sim
+      - name: Source-only repository check
+        run: uv run --locked python scripts/check_repo_hygiene.py
+      - name: Lint
+        run: uv run --locked ruff check src/articraft tests scripts benchmarks
+      - name: Formatting
+        run: uv run --locked ruff format --check src/articraft tests scripts
+      - name: Offline tests
+        run: uv run --locked pytest -q -m 'not live and not volume'
+      - name: Build wheel
+        run: uv build --wheel --no-sources
+      - name: Installed wheel compile smoke test
+        run: |
+          uv venv /tmp/usdcraft-wheel
+          uv pip install --python /tmp/usdcraft-wheel/bin/python dist/*.whl
+          /tmp/usdcraft-wheel/bin/articraft --help
+          /tmp/usdcraft-wheel/bin/python scripts/run_example.py --output /tmp/usdcraft-wheel-output

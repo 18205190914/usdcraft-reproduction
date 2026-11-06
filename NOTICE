@@ -1,0 +1,23 @@
+USDCraft Reproduction on Articraft
+
+This is an unofficial research reproduction and is not NVIDIA's USDCraft source
+code or an official NVIDIA release. No NVIDIA SDK binaries are redistributed.
+
+The Python package and authoring SDK are derived from Articraft:
+https://github.com/articraftresearch/Articraft
+https://github.com/mattzh72/articraft
+Original package metadata identifies Matthew Zhou as the author.
+The supplied upstream LICENSE (Apache License 2.0) is preserved unchanged.
+The working project was obtained as a ZIP; its exact upstream commit was not
+recorded. This publication copy does not invent an upstream revision or history.
+
+USDCraft reproduction additions include source-surface observations, geometric
+rechecking and local diagnosis, file-based modeling sessions, whole-program
+repair workflows, and the separate native PhysX acceptance bridge and scripts.
+The source-only repository preparation also adds portable native configuration,
+offline example entry points, publication hygiene and contributor documentation.
+
+Vendored build123d documentation and reference figures are runtime SDK reference
+material, not project experiment results. See
+src/articraft/sdk/docs/build123d/VENDORED.md for provenance and limitations.
+Upstream copyright and licensing notices in those files are retained.

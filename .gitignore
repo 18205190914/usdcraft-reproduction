@@ -1,0 +1,52 @@
+# Local credentials and environment configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python environments, builds and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage*
+htmlcov/
+build/
+dist/
+
+# Local inputs and generated artifacts belong outside version control
+/data/
+/datasets/
+/weights/
+/models/
+/outputs/
+/results/
+/runs/
+/work/
+*.usdz
+*.usd
+*.usda
+*.usdc
+*.ply
+*.npz
+*.npy
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.mp4
+*.mov
+*.avi
+*.log
+*.zip
+
+# Editor and OS state
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

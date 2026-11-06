@@ -1,0 +1,640 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, ClassVar
+
+from typer.testing import CliRunner
+
+from articraft import api, app
+from articraft.agent.record import Record, append_conversation
+from articraft.compiler.worker import TextureRunResult
+from articraft.settings import Settings, get_settings
+
+
+class FakeOpenAIModel:
+    instances: ClassVar[list[FakeOpenAIModel]] = []
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.closed = False
+        self.instances.append(self)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakeEnvironment:
+    instances: ClassVar[list[FakeEnvironment]] = []
+
+    def __init__(self, **kwargs: Any):
+        self.kwargs = kwargs
+        self.instances.append(self)
+
+
+class FakeAgent:
+    instances: ClassVar[list[FakeAgent]] = []
+    result: ClassVar[dict[str, object]] = {
+        "status": "success",
+        "run": "/tmp/run",
+        "result": "result/model.usdz",
+        "message": "done",
+    }
+
+    def __init__(self, model: FakeOpenAIModel, env: FakeEnvironment, **kwargs: Any):
+        self.model = model
+        self.env = env
+        self.kwargs = kwargs
+        self.prompt = ""
+        self.image_path: Path | None = None
+        self.instances.append(self)
+
+    async def run(
+        self,
+        prompt: str,
+        *,
+        image_path: Path | None = None,
+    ) -> dict[str, object]:
+        try:
+            self.prompt = prompt
+            self.image_path = image_path
+            return self.result
+        finally:
+            await self.model.close()
+
+
+def reset_fakes() -> None:
+    FakeOpenAIModel.instances = []
+    FakeEnvironment.instances = []
+    FakeAgent.instances = []
+    FakeAgent.result = {
+        "status": "success",
+        "run": "/tmp/run",
+        "result": "result/model.usdz",
+        "message": "done",
+    }
+
+
+def test_cli_runs_agent_with_only_core_overrides(monkeypatch, tmp_path: Path) -> None:
+    reset_fakes()
+    monkeypatch.setattr(api, "create_model", FakeOpenAIModel)
+    monkeypatch.setattr(api, "LocalWorkspace", FakeEnvironment)
+    monkeypatch.setattr(api, "Agent", FakeAgent)
+    monkeypatch.setattr(
+        app, "get_settings", lambda: Settings(openai_api_key="sk-test", max_turns=123)
+    )
+
+    output_dir = tmp_path / "runs"
+    result = CliRunner().invoke(
+        app.cli,
+        [
+            "generate",
+            "make a hinge",
+            "--model",
+            "gpt-future-preview",
+            "--output-dir",
+            str(output_dir),
+            "--effort",
+            "low",
+            "--compile-timeout",
+            "45",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert FakeOpenAIModel.instances[0].settings.openai_model == "gpt-future-preview"
+    assert FakeOpenAIModel.instances[0].settings.output_dir == output_dir
+    assert FakeOpenAIModel.instances[0].settings.openai_reasoning_effort == "low"
+    assert FakeOpenAIModel.instances[0].closed is True
+    assert FakeOpenAIModel.instances[0].settings.compile_timeout_seconds == 45
+    assert FakeEnvironment.instances[0].kwargs == {
+        "output_dir": output_dir,
+        "timeout_seconds": 45,
+        "physics_enabled": False,
+    }
+    assert FakeAgent.instances[0].kwargs == {"max_turns": 123}
+    assert FakeAgent.instances[0].prompt == "make a hinge"
+    assert FakeAgent.instances[0].image_path is None
+
+
+def test_cli_physics_flag_enables_the_physics_lane(monkeypatch, tmp_path: Path) -> None:
+    reset_fakes()
+    monkeypatch.setattr(api, "create_model", FakeOpenAIModel)
+    monkeypatch.setattr(api, "LocalWorkspace", FakeEnvironment)
+    monkeypatch.setattr(api, "Agent", FakeAgent)
+    monkeypatch.setattr(app, "get_settings", lambda: Settings(openai_api_key="sk-test"))
+
+    result = CliRunner().invoke(
+        app.cli,
+        ["generate", "make a hinge", "--output-dir", str(tmp_path / "runs"), "--physics"],
+    )
+
+    assert result.exit_code == 0
+    assert FakeOpenAIModel.instances[0].settings.physics_enabled is True
+    assert FakeEnvironment.instances[0].kwargs["physics_enabled"] is True
+
+
+def test_cli_applies_textures_only_after_generation(monkeypatch) -> None:
+    reset_fakes()
+    monkeypatch.setattr(api, "create_model", FakeOpenAIModel)
+    monkeypatch.setattr(api, "LocalWorkspace", FakeEnvironment)
+    monkeypatch.setattr(api, "Agent", FakeAgent)
+    monkeypatch.setattr(app, "get_settings", lambda: Settings(openai_api_key="sk-test"))
+    applied: list[dict[str, Any]] = []
+    monkeypatch.setattr(app, "_apply_textures", applied.append)
+
+    result = CliRunner().invoke(
+        app.cli,
+        ["generate", "make a steel ball", "--textures", "--no-tui"],
+    )
+
+    assert result.exit_code == 0
+    assert FakeAgent.instances[0].kwargs == {"max_turns": 100}
+    assert FakeAgent.instances[0].prompt == "make a steel ball"
+    assert applied == [FakeAgent.result]
+
+
+def test_texture_flag_is_postprocessing_after_tui_generation(monkeypatch) -> None:
+    monkeypatch.setattr(app, "get_settings", lambda: Settings(openai_api_key="sk-test"))
+    calls: list[tuple[str, object]] = []
+    generated = {"status": "success", "run": "/tmp/run"}
+
+    def run_generation(_settings, _prompt, _image, *, use_tui):
+        calls.append(("generate", use_tui))
+        return generated
+
+    def apply_textures(result):
+        calls.append(("textures", result))
+
+    monkeypatch.setattr(app, "_run_generation", run_generation)
+    monkeypatch.setattr(app, "_apply_textures", apply_textures)
+
+    result = CliRunner().invoke(
+        app.cli,
+        ["generate", "make a steel ball", "--textures", "--tui"],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [("generate", True), ("textures", generated)]
+
+
+def test_apply_textures_updates_the_reported_result_path(monkeypatch, tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    final_usdz = run_dir / "result" / "usdz" / "0003.usdz"
+    monkeypatch.setattr(
+        app,
+        "texture_run",
+        lambda _run: TextureRunResult(
+            succeeded=True,
+            requested_shapes=1,
+            textured_shapes=1,
+            usdz=final_usdz,
+        ),
+    )
+    result: dict[str, Any] = {
+        "status": "success",
+        "run": str(run_dir),
+        "result": "result/usdz/0002.usdz",
+    }
+
+    app._apply_textures(result)
+
+    assert result["result"] == "result/usdz/0003.usdz"
+
+
+def test_apply_textures_ignores_failed_generation(monkeypatch) -> None:
+    def unexpected_texture_run(_run):
+        raise AssertionError("failed generation must not start texture postprocessing")
+
+    monkeypatch.setattr(app, "texture_run", unexpected_texture_run)
+
+    app._apply_textures({"status": "error", "run": "/tmp/run"})
+
+
+def test_cli_passes_reference_image_to_agent(monkeypatch, tmp_path: Path) -> None:
+    reset_fakes()
+    monkeypatch.setattr(api, "create_model", FakeOpenAIModel)
+    monkeypatch.setattr(api, "LocalWorkspace", FakeEnvironment)
+    monkeypatch.setattr(api, "Agent", FakeAgent)
+    monkeypatch.setattr(app, "get_settings", lambda: Settings(openai_api_key="sk-test"))
+    image_path = tmp_path / "reference.png"
+    image_path.write_bytes(b"image")
+
+    result = CliRunner().invoke(
+        app.cli,
+        ["generate", "make a hinge", "--image", str(image_path)],
+    )
+
+    assert result.exit_code == 0
+    assert FakeAgent.instances[0].image_path == image_path.resolve()
+
+
+def test_cli_rejects_openrouter_reference_image(monkeypatch, tmp_path: Path) -> None:
+    reset_fakes()
+    monkeypatch.setattr(
+        app,
+        "get_settings",
+        lambda: Settings(openrouter_api_key="or-test"),
+    )
+    image_path = tmp_path / "reference.png"
+    image_path.write_bytes(b"image")
+
+    result = CliRunner().invoke(
+        app.cli,
+        [
+            "generate",
+            "make a hinge",
+            "--provider",
+            "openrouter",
+            "--image",
+            str(image_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "OpenRouter does not support reference images." in result.output
+    assert FakeAgent.instances == []
+
+
+def test_cli_rejects_missing_reference_image(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(app, "get_settings", lambda: Settings(openai_api_key="sk-test"))
+
+    result = CliRunner().invoke(
+        app.cli,
+        ["generate", "make a hinge", "--image", str(tmp_path / "missing.png")],
+    )
+
+    assert result.exit_code == 2
+    assert "does not exist" in result.output
+
+
+def test_cli_reports_invalid_reference_image_without_traceback(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    reset_fakes()
+    monkeypatch.setattr(api, "create_model", FakeOpenAIModel)
+    monkeypatch.setattr(
+        app,
+        "get_settings",
+        lambda: Settings(openai_api_key="sk-test", output_dir=tmp_path / "runs"),
+    )
+    image_path = tmp_path / "reference.png"
+    image_path.write_bytes(b"not an image")
+
+    result = CliRunner().invoke(
+        app.cli,
+        ["generate", "make a hinge", "--image", str(image_path)],
+    )
+
+    assert result.exit_code == 1
+    assert "not a supported PNG, JPEG, GIF, or WebP image" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_cli_selects_gemini_provider(monkeypatch, tmp_path: Path) -> None:
+    reset_fakes()
+    monkeypatch.setattr(api, "create_model", FakeOpenAIModel)
+    monkeypatch.setattr(api, "LocalWorkspace", FakeEnvironment)
+    monkeypatch.setattr(api, "Agent", FakeAgent)
+    monkeypatch.setattr(
+        app,
+        "get_settings",
+        lambda: Settings(gemini_api_key="gemini-test", max_turns=123),
+    )
+
+    output_dir = tmp_path / "runs"
+    result = CliRunner().invoke(
+        app.cli,
+        [
+            "generate",
+            "make a hinge",
+            "--provider",
+            "gemini",
+            "--model",
+            "gemini-3.1-pro-preview",
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    settings = FakeOpenAIModel.instances[0].settings
+    assert settings.provider == "gemini"
+    assert settings.gemini_model == "gemini-3.1-pro-preview"
+    assert settings.output_dir == output_dir
+    assert settings.selected_model == "gemini-3.1-pro-preview"
+
+
+def test_cli_selects_anthropic_provider(monkeypatch, tmp_path: Path) -> None:
+    reset_fakes()
+    monkeypatch.setattr(api, "create_model", FakeOpenAIModel)
+    monkeypatch.setattr(api, "LocalWorkspace", FakeEnvironment)
+    monkeypatch.setattr(api, "Agent", FakeAgent)
+    monkeypatch.setattr(
+        app,
+        "get_settings",
+        lambda: Settings(anthropic_api_key="anthropic-test", max_turns=123),
+    )
+
+    output_dir = tmp_path / "runs"
+    result = CliRunner().invoke(
+        app.cli,
+        [
+            "generate",
+            "make a hinge",
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-opus-5",
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    settings = FakeOpenAIModel.instances[0].settings
+    assert settings.provider == "anthropic"
+    assert settings.anthropic_model == "claude-opus-5"
+    assert settings.output_dir == output_dir
+    assert settings.selected_model == "claude-opus-5"
+
+
+def test_cli_selects_openrouter_provider_with_arbitrary_model(monkeypatch, tmp_path: Path) -> None:
+    reset_fakes()
+    monkeypatch.setattr(api, "create_model", FakeOpenAIModel)
+    monkeypatch.setattr(api, "LocalWorkspace", FakeEnvironment)
+    monkeypatch.setattr(api, "Agent", FakeAgent)
+    monkeypatch.setattr(
+        app,
+        "get_settings",
+        lambda: Settings(openrouter_api_key="or-test", max_turns=123),
+    )
+
+    output_dir = tmp_path / "runs"
+    result = CliRunner().invoke(
+        app.cli,
+        [
+            "generate",
+            "make a hinge",
+            "--provider",
+            "openrouter",
+            "--model",
+            "vendor/new-model",
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    settings = FakeOpenAIModel.instances[0].settings
+    assert settings.provider == "openrouter"
+    assert settings.openrouter_model == "vendor/new-model"
+    assert settings.output_dir == output_dir
+    assert settings.selected_model == "vendor/new-model"
+
+
+def test_cli_warns_on_missing_required_settings(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    get_settings.cache_clear()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = CliRunner().invoke(app.cli, ["generate", "make a hinge", "--no-tui"])
+
+    assert result.exit_code == 1
+    assert "Missing required environment variable" in result.output
+    assert "OPENAI_API_KEY" in result.output
+    assert ".env.example" in result.output
+    assert "setup needed" in result.output
+    assert "Traceback" not in result.output
+    assert "ValidationError" not in result.output
+
+
+def test_cli_warns_on_missing_gemini_key(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    get_settings.cache_clear()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    result = CliRunner().invoke(
+        app.cli,
+        ["generate", "make a hinge", "--provider", "gemini", "--no-tui"],
+    )
+
+    assert result.exit_code == 1
+    assert "Missing required environment variable" in result.output
+    assert "GEMINI_API_KEY" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_cli_warns_on_missing_anthropic_key(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    get_settings.cache_clear()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    result = CliRunner().invoke(
+        app.cli,
+        ["generate", "make a hinge", "--provider", "anthropic", "--no-tui"],
+    )
+
+    assert result.exit_code == 1
+    assert "Missing required environment variable" in result.output
+    assert "ANTHROPIC_API_KEY" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_cli_uses_default_openrouter_model_and_warns_on_missing_key(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    get_settings.cache_clear()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ARTICRAFT_OPENROUTER_MODEL", raising=False)
+
+    result = CliRunner().invoke(
+        app.cli,
+        ["generate", "make a hinge", "--provider", "openrouter", "--no-tui"],
+    )
+
+    assert result.exit_code == 1
+    assert "OPENROUTER_API_KEY" in result.output
+    assert "ARTICRAFT_OPENROUTER_MODEL or --model" not in result.output
+    assert "Traceback" not in result.output
+
+
+def test_cli_passes_unrecognized_anthropic_model_to_model_call(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    reset_fakes()
+    monkeypatch.setattr(api, "create_model", FakeOpenAIModel)
+    monkeypatch.setattr(api, "LocalWorkspace", FakeEnvironment)
+    monkeypatch.setattr(api, "Agent", FakeAgent)
+    monkeypatch.setattr(
+        app,
+        "get_settings",
+        lambda: Settings(anthropic_api_key="anthropic-test", output_dir=tmp_path / "runs"),
+    )
+
+    result = CliRunner().invoke(
+        app.cli,
+        [
+            "generate",
+            "make a hinge",
+            "--provider",
+            "anthropic",
+            "--model",
+            "claude-future-preview",
+            "--no-tui",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert FakeOpenAIModel.instances[0].settings.anthropic_model == "claude-future-preview"
+    assert "unrecognized model slug" not in result.output
+
+
+def test_cli_exits_nonzero_when_agent_fails(monkeypatch) -> None:
+    reset_fakes()
+    FakeAgent.result = {"status": "error", "run": "/tmp/run", "error": "compile failed"}
+    monkeypatch.setattr(api, "create_model", FakeOpenAIModel)
+    monkeypatch.setattr(api, "LocalWorkspace", FakeEnvironment)
+    monkeypatch.setattr(api, "Agent", FakeAgent)
+    monkeypatch.setattr(app, "get_settings", lambda: Settings(openai_api_key="sk-test"))
+
+    result = CliRunner().invoke(app.cli, ["generate", "make a hinge"])
+
+    assert result.exit_code == 1
+    assert "error: compile failed" in result.output
+
+
+def test_cli_replays_recorded_run(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run-demo"
+    run_dir.mkdir()
+    conversation = run_dir / "conversation.jsonl"
+    append_conversation(conversation, {"role": "user", "content": "make a box"})
+    append_conversation(
+        conversation,
+        {
+            "role": "assistant",
+            "content": "writing the file",
+            "tool_calls": [
+                {"id": "c1", "name": "write", "arguments": json.dumps({"path": "main.py"})}
+            ],
+        },
+    )
+    append_conversation(
+        conversation,
+        {
+            "type": "function_call_output",
+            "call_id": "c1",
+            "output": json.dumps({"result": {"path": "main.py", "bytes": 120}}),
+        },
+    )
+    append_conversation(conversation, {"role": "compiler", "status": "success", "error": ""})
+    Record(run_id="run-demo", status="success", result="result/model.usdz").save(
+        run_dir / "record.json"
+    )
+
+    result = CliRunner().invoke(app.cli, ["replay", str(run_dir)])
+
+    assert result.exit_code == 0
+    assert "make a box" in result.output
+    assert "write(main.py)" in result.output
+    assert "compile ok" in result.output
+    assert "success" in result.output
+
+
+def test_cli_replay_missing_run_exits_nonzero(tmp_path: Path) -> None:
+    result = CliRunner().invoke(app.cli, ["replay", str(tmp_path / "nope")])
+
+    assert result.exit_code == 1
+    assert "no conversation log" in result.output
+
+
+def test_cli_view_opens_resolved_run(monkeypatch, tmp_path: Path) -> None:
+    viewed: list[Path] = []
+
+    def view_run(run_dir: Path) -> None:
+        viewed.append(run_dir)
+
+    monkeypatch.setattr(app, "serve_viewer", view_run)
+
+    result = CliRunner().invoke(
+        app.cli,
+        ["view", "run-demo", "--output-dir", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert viewed == [tmp_path / "run-demo"]
+
+
+def test_cli_view_reports_invalid_run(monkeypatch, tmp_path: Path) -> None:
+    def fail(_run_dir: Path) -> None:
+        raise ValueError("no USDZ outputs")
+
+    monkeypatch.setattr(app, "serve_viewer", fail)
+    result = CliRunner().invoke(app.cli, ["view", str(tmp_path / "missing")])
+
+    assert result.exit_code == 1
+    assert "no USDZ outputs" in result.output
+
+
+def test_main_args_accept_bare_prompt() -> None:
+    assert app._app_args(["articulated lamp"]) == ["generate", "articulated lamp"]
+    assert app._app_args(["articulated lamp", "--model", "gpt-test"]) == [
+        "generate",
+        "articulated lamp",
+        "--model",
+        "gpt-test",
+    ]
+    assert app._app_args(["--model", "gpt-test", "articulated lamp"]) == [
+        "generate",
+        "--model",
+        "gpt-test",
+        "articulated lamp",
+    ]
+
+
+def test_main_args_keep_commands_and_help() -> None:
+    assert app._app_args(["generate", "articulated lamp"]) == ["generate", "articulated lamp"]
+    assert app._app_args(["replay", "run-x"]) == ["replay", "run-x"]
+    assert app._app_args(["view", "run-x"]) == ["view", "run-x"]
+    assert app._app_args(["texture", "run-x"]) == ["texture", "run-x"]
+    assert app._app_args(["--help"]) == ["--help"]
+
+
+def test_point_record_at_rewrites_the_result_path(tmp_path: Path) -> None:
+    """The CLI owns this: the compiler reports the usdz, the caller records it."""
+    run_dir = tmp_path / "run"
+    (run_dir / "result" / "usdz").mkdir(parents=True)
+    Record(run_id="run", status="success", result="result/usdz/0000.usdz").save(
+        run_dir / "record.json"
+    )
+
+    app._point_record_at(run_dir, run_dir / "result" / "usdz" / "0001.usdz")
+
+    assert Record.load(run_dir / "record.json").result == "result/usdz/0001.usdz"
+
+
+def test_point_record_at_is_a_noop_without_a_record(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    app._point_record_at(run_dir, run_dir / "result" / "usdz" / "0001.usdz")
+
+    assert not (run_dir / "record.json").exists()
+
+
+def test_point_record_at_survives_an_unreadable_record(tmp_path: Path, capsys) -> None:
+    """The usdz is already exported; a broken trace must not take the run down."""
+    run_dir = tmp_path / "run"
+    (run_dir / "result" / "usdz").mkdir(parents=True)
+    (run_dir / "record.json").write_text("{not json", encoding="utf-8")
+
+    app._point_record_at(run_dir, run_dir / "result" / "usdz" / "0001.usdz")
+
+    assert "could not update record.json" in capsys.readouterr().err

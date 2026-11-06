@@ -1,0 +1,53 @@
+{
+  "version": "native-v2",
+  "dt_s": 0.0010416666666666667,
+  "duration_s": 4.0,
+  "position_iterations": 16,
+  "velocity_iterations": 4,
+  "contact_offset_m": 0.001,
+  "rest_offset_m": 0.0,
+  "solver": "TGS",
+  "gpu_dynamics": false,
+  "ccd": true,
+  "peak_floor_penetration_m": 0.001,
+  "resting_floor_penetration_m": 0.0005,
+  "revolute_limit_tolerance_deg": 0.5,
+  "prismatic_limit_tolerance_m": 0.0005,
+  "tracking_revolute_tolerance_deg": 2.0,
+  "tracking_prismatic_tolerance_m": 0.002,
+  "drive_revolute_stiffness": 100.0,
+  "drive_revolute_damping": 20.0,
+  "drive_revolute_max_force": 20.0,
+  "drive_prismatic_stiffness": 2000.0,
+  "drive_prismatic_damping": 200.0,
+  "drive_prismatic_max_force": 100.0,
+  "scenarios": [
+    "drop",
+    "half_open_release",
+    "drive_cycle",
+    "limit_load"
+  ],
+  "repeats": 3,
+  "fixed_base_except_drop": true,
+  "self_collisions": true,
+  "adjacent_joint_collisions": true,
+  "asset_collision_approximation": "asset collider types and enabled flags are explicit in the adaptation manifest",
+  "scope": "engineering acceptance, not the paper's accuracy protocol",
+  "initial_conditions": {
+    "perturbation_force": "world +X, 0.2 * child mass * gravity",
+    "fixture": "native fixed joint to world, except free drop",
+    "drive_fraction": 0.8,
+    "max_anchor_error_m": 0.001,
+    "drop_height_m": 0.1,
+    "drive_switch_s": 2.0,
+    "perturbation_s": [
+      2.0,
+      2.5
+    ],
+    "half_open_fraction": 0.5,
+    "limit_drive_fraction": 1.1,
+    "resting_window_s": 0.5,
+    "perturbation_force_fraction": 0.2,
+    "settling_window_s": 0.25
+  }
+}
