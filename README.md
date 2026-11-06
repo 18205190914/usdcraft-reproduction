@@ -130,8 +130,4 @@ uv run --locked python scripts/check_repo_hygiene.py
 
 默认 pytest 排除 live 和 volume；仓库 CI 不使用模型密钥、不安装 Isaac、不运行付费模型。训练步骤不适用：当前实现使用现成模型 API 和确定性 CAD/几何/物理工具。
 
-## 限制与归属
-
-几何一致性、结构有效性、物理稳定性是不同检查，不能互相代替。曲面碰撞、复杂多实体语义和真实运动范围仍有局限；缺测表面不能推断为真空或可靠内部结构。本地评估代码尚不等同于论文官方协议，不提供“论文精度已复现”的承诺。当前没有自动网络搜索/下载资产的完整流程。
-
 底座为 [Articraft](https://github.com/articraftresearch/Articraft)，保留 [Apache 2.0 许可证](LICENSE) 与 [NOTICE](NOTICE)。仓库组织参考 [PyPA sampleproject](https://github.com/pypa/sampleproject) 的 `src/ + tests/` 分离，以及 [Open3D](https://github.com/isl-org/Open3D) 的代码、文档和示例分工。具体职责、发布步骤和源代码版本来源见 [仓库维护说明](docs/repository-layout.md) 和 [CONTRIBUTING.md](CONTRIBUTING.md)。
