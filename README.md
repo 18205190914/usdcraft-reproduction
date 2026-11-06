@@ -12,7 +12,7 @@
 | 自由程序编译、SDK 验收 | `compiler/`、`sdk/` | build123d BRep、独立结构检查、关节与质量属性、USDZ 导出 |
 | 源/候选几何复查 | `geometry_recheck.py` | 共用网格覆盖 + libigl 连续距离/法向 + 局部区域诊断 |
 | 运动检查和反馈修订 | `usdcraft_motion.py`、`usdcraft_workflow.py` | 运动范围扫描、碰撞/干涉检查；失败反馈回到完整程序修订 |
-| 外部智能体文件会话 | `usdcraft_session.py` | prepare → measure → submit；不会自动启动 Codex |
+| 外部智能体文件会话 | `usdcraft_session.py` | prepare → measure → submit；不会自动启动 GPT |
 | OpenRouter 整段程序后端 | `usdcraft_program.py` | 显式模型选择、额度预检；此适配器不接收图像像素 |
 | 原生 PhysX 验收（可选） | `usdcraft_physx.py`、`scripts/isaac/` | 独立 Windows Isaac Sim；不是 MuJoCo 结果替代 |
 | 浏览器查看 / MuJoCo 检查 | `viewer.py`、`simulate.py` | 关节显示与交互；MuJoCo 是独立的辅助后端 |
